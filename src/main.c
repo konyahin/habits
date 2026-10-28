@@ -1,12 +1,14 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -31,12 +33,14 @@ static const char keys[] = "abcdefghijklmnoprstuvwxyz";
 
 #define MAXW	64	/* table never wider than this */
 #define FIXW	18	/* table width minus the name column */
+#define MINNW	5	/* name column fits at least "HABIT" */
 
 static struct termios orig;
 static int raw;
 
 /* The day file, line by line, newlines included: written back verbatim. */
 static char **lines;
+static size_t *lens;
 static size_t nlines;
 /* First char of every line as last saved: toggling back is not a change. */
 static char *saved;
@@ -90,14 +94,19 @@ raw_on(void)
 }
 
 static void
-addline(char *s)
+addline(char *s, size_t len)
 {
 	char **p;
+	size_t *q;
 
 	if ((p = realloc(lines, (nlines + 1) * sizeof(*lines))) == NULL)
 		die("out of memory");
 	lines = p;
-	lines[nlines++] = s;
+	if ((q = realloc(lens, (nlines + 1) * sizeof(*lens))) == NULL)
+		die("out of memory");
+	lens = q;
+	lines[nlines] = s;
+	lens[nlines++] = len;
 }
 
 /* Appends the file's lines; -1 with errno set if it cannot be opened. */
@@ -107,11 +116,12 @@ load(const char *path)
 	FILE *f;
 	char *buf = NULL;
 	size_t cap = 0;
+	ssize_t len;
 
 	if ((f = fopen(path, "r")) == NULL)
 		return -1;
-	while (getline(&buf, &cap, f) != -1) {
-		addline(buf);
+	while ((len = getline(&buf, &cap, f)) != -1) {
+		addline(buf, (size_t)len);
 		buf = NULL;
 		cap = 0;
 	}
@@ -144,24 +154,37 @@ dirty(void)
 	return 0;
 }
 
-/* Write to a temp file and rename, so a crash never leaves half a day. */
+/*
+ * Write a unique temp file, sync it and rename over the day, so a crash
+ * leaves either the old file or the new one, never half of it.
+ */
 static void
 save(const char *path)
 {
 	char tmp[PATH_MAX];
 	FILE *f;
 	size_t i;
+	int fd;
 
-	if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= sizeof(tmp))
+	if ((size_t)snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path) >= sizeof(tmp))
 		die("path too long: %s", path);
-	if ((f = fopen(tmp, "w")) == NULL)
+	if ((fd = mkstemp(tmp)) == -1)
+		die("mkstemp %s: %s", tmp, strerror(errno));
+	if (fchmod(fd, 0644) == -1 || (f = fdopen(fd, "w")) == NULL) {
+		unlink(tmp);
 		die("open %s: %s", tmp, strerror(errno));
+	}
 	for (i = 0; i < nlines; i++)
-		fputs(lines[i], f);
-	if (fclose(f) == EOF)
+		fwrite(lines[i], 1, lens[i], f);
+	if (fflush(f) == EOF || ferror(f) || fsync(fd) == -1 ||
+	    fclose(f) == EOF) {
+		unlink(tmp);
 		die("write %s: %s", tmp, strerror(errno));
-	if (rename(tmp, path) == -1)
+	}
+	if (rename(tmp, path) == -1) {
+		unlink(tmp);
 		die("rename %s: %s", tmp, strerror(errno));
+	}
 	snapshot();
 }
 
@@ -298,7 +321,7 @@ render(const char *date, int saving)
 		w = ws.ws_col;
 	if (w > MAXW)
 		w = MAXW;
-	nw = w > FIXW + 4 ? w - FIXW : 4;
+	nw = w > FIXW + MINNW ? w - FIXW : MINNW;
 
 	/* OPOST is off: newlines need an explicit \r. */
 	fputs(BASE "\x1b[2J\x1b[H\r\n", stdout);
@@ -372,7 +395,7 @@ main(void)
 		snprintf(hdr, sizeof(hdr), "# %s\n", date);
 		if ((s = strdup(hdr)) == NULL)
 			die("out of memory");
-		addline(s);
+		addline(s, strlen(s));
 		if (load(tmpl) == -1)
 			die("open %s: %s", tmpl, strerror(errno));
 		save(day);

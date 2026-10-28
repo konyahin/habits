@@ -3,7 +3,7 @@
 # Cross build and copy to iCloud logs/bin:     make deploy
 
 PROG    = habits
-SRC     = $(wildcard src/*.c)
+SRC     = src/main.c
 OBJ     = $(SRC:.c=.o)
 
 CC      ?= cc

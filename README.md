@@ -96,6 +96,10 @@ export HABITS_DIR=/mnt/icloud/habits/days
 Changes are written only on `q`. If iOS suspends and kills iSH with
 unsaved changes, they are lost. `^C` quits without saving.
 
+Each save writes a temp file, `fsync`s it and renames it over the day
+file. On iCloud Drive that can block for seconds; the header shows
+`SAVING` meanwhile. This is why changes are not written on every toggle.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
