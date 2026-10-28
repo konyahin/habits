@@ -174,8 +174,14 @@ toggle(size_t k)
 	return 0;
 }
 
+static const char *
+footer(void)
+{
+	return dirty() ? "\x1b[31mq  save and quit\x1b[0m" : "q  save and quit";
+}
+
 static void
-render(const char *date)
+render(const char *date, const char *status)
 {
 	size_t i, k = 0;
 
@@ -191,8 +197,8 @@ render(const char *date)
 		    (int)strcspn(l, "\r\n"), l);
 		k++;
 	}
-	fputs(dirty() ? "\r\n\x1b[31mq  save and quit\x1b[0m\r\n" :
-	    "\r\nq  save and quit\r\n", stdout);	fflush(stdout);
+	printf("\r\n%s\r\n", status);
+	fflush(stdout);
 }
 
 int
@@ -235,20 +241,24 @@ main(void)
 		snapshot();
 
 	raw_on();
-	render(date);
+	render(date, footer());
 	for (;;) {
 		if ((n = read(STDIN_FILENO, &c, 1)) == -1)
 			die("read: %s", strerror(errno));
 		if (n == 1 && c == 3)		/* ^C: discard */
 			break;
 		if (n == 0 || c == 'q') {	/* EOF, q */
-			if (dirty())
+			if (dirty()) {
+				/* The write may block for a while on iCloud. */
+				render(date, "\x1b[33msaving...\x1b[0m");
 				save(day);
+				render(date, "saved");
+			}
 			break;
 		}
 		if (c != '\0' && (p = strchr(keys, c)) != NULL &&
 		    toggle((size_t)(p - keys)))
-			render(date);
+			render(date, footer());
 	}
 	return EXIT_SUCCESS;
 }
