@@ -47,7 +47,9 @@ happened. A habit is any line starting with one of `-+!*` followed by a
 space. Every other line (headers, notes, blank lines) is kept byte for
 byte, so day files can be edited by hand.
 
-Up to 25 habits get keys (`a`–`z` without `q`), assigned by position.
+The table lists good habits first, then bad ones, split by a rule; each
+group keeps file order. Up to 25 habits get keys (`a`–`z` without `q`)
+in that display order. The file itself is never reordered.
 
 ## Environment
 

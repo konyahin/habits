@@ -173,24 +173,44 @@ ishabit(const char *l)
 }
 
 static int
+isbad(const char *l)
+{
+	return l[0] == '!' || l[0] == '*';
+}
+
+/*
+ * Line index of the k-th habit in display order: good habits first, then
+ * bad, each in file order. Keys follow this order. nlines if none.
+ */
+static size_t
+nth(size_t k)
+{
+	size_t i;
+	int bad;
+
+	for (bad = 0; bad < 2; bad++)
+		for (i = 0; i < nlines; i++)
+			if (ishabit(lines[i]) && isbad(lines[i]) == bad && k-- == 0)
+				return i;
+	return nlines;
+}
+
+static int
 toggle(size_t k)
 {
 	size_t i;
+	char *l;
 
-	for (i = 0; i < nlines; i++) {
-		char *l = lines[i];
-
-		if (!ishabit(l) || k-- > 0)
-			continue;
-		switch (l[0]) {
-		case '-': l[0] = '+'; break;
-		case '+': l[0] = '-'; break;
-		case '!': l[0] = '*'; break;
-		case '*': l[0] = '!'; break;
-		}
-		return 1;
+	if ((i = nth(k)) == nlines)
+		return 0;
+	l = lines[i];
+	switch (l[0]) {
+	case '-': l[0] = '+'; break;
+	case '+': l[0] = '-'; break;
+	case '!': l[0] = '*'; break;
+	case '*': l[0] = '!'; break;
 	}
-	return 0;
+	return 1;
 }
 
 /* Code points in s[0..n): enough for Cyrillic, wide glyphs will misalign. */
@@ -270,7 +290,7 @@ static void
 render(const char *date, int saving)
 {
 	struct winsize ws;
-	size_t i, k = 0, w = 80, nw;
+	size_t i, k, w = 80, nw;
 	int d = dirty();
 	const char *bc, *bt;
 
@@ -303,11 +323,10 @@ render(const char *date, int saving)
 	pad(nw - 5);
 	fputs(LINE " │ " DIM "STATE   " LINE "│\r\n", stdout);
 	hline("├", "┼", "┤", nw);
-	for (i = 0; i < nlines; i++) {
-		if (!ishabit(lines[i]))
-			continue;
+	for (k = 0; (i = nth(k)) < nlines; k++) {
+		if (k > 0 && isbad(lines[i]) && !isbad(lines[nth(k - 1)]))
+			hline("├", "┼", "┤", nw);
 		row(k < NKEYS ? keys[k] : ' ', lines[i], nw);
-		k++;
 	}
 	hline("└", "┴", "┘", nw);
 
