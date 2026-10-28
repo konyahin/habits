@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -13,6 +14,23 @@
 /* Toggle keys in habit order; q is reserved for quit. */
 static const char keys[] = "abcdefghijklmnoprstuvwxyz";
 #define NKEYS (sizeof(keys) - 1)
+
+/* TAU-CETI palette, 24-bit SGR. Accents: ACID = done, WARN = lapse/unsaved. */
+#define BASE	"\x1b[0;38;2;231;236;232;48;2;10;13;16m"	/* FG on BG */
+#define FG	"\x1b[38;2;231;236;232m"
+#define DIM	"\x1b[38;2;139;150;155m"
+#define LINE	"\x1b[38;2;86;99;107m"
+#define ACID	"\x1b[38;2;201;255;61m"
+#define WARN	"\x1b[38;2;255;61;90m"
+#define BOLD	"\x1b[1m"
+#define NOBOLD	"\x1b[22m"
+/* Badges: dark text on a flat accent. */
+#define B_ACID	"\x1b[1;38;2;10;13;16;48;2;201;255;61m"
+#define B_WARN	"\x1b[1;38;2;10;13;16;48;2;255;61;90m"
+#define B_DIM	"\x1b[1;38;2;10;13;16;48;2;139;150;155m"
+
+#define MAXW	64	/* table never wider than this */
+#define FIXW	18	/* table width minus the name column */
 
 static struct termios orig;
 static int raw;
@@ -27,7 +45,8 @@ static void
 raw_off(void)
 {
 	if (raw) {
-		fputs("\x1b[?25h", stdout);	/* show cursor */
+		/* Reset colors, show cursor, leave the alternate screen. */
+		fputs("\x1b[0m\x1b[?25h\x1b[?1049l", stdout);
 		fflush(stdout);
 		tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
 		raw = 0;
@@ -67,7 +86,7 @@ raw_on(void)
 		die("tcsetattr: %s", strerror(errno));
 	raw = 1;
 	atexit(raw_off);
-	fputs("\x1b[?25l", stdout);	/* hide cursor */
+	fputs("\x1b[?1049h\x1b[?25l", stdout);	/* alt screen, hide cursor */
 }
 
 static void
@@ -174,30 +193,131 @@ toggle(size_t k)
 	return 0;
 }
 
-static const char *
-footer(void)
+/* Code points in s[0..n): enough for Cyrillic, wide glyphs will misalign. */
+static size_t
+ulen(const char *s, size_t n)
 {
-	return dirty() ? "\x1b[31mq  save and quit\x1b[0m" : "q  save and quit";
+	size_t i, w = 0;
+
+	for (i = 0; i < n; i++)
+		if (((unsigned char)s[i] & 0xC0) != 0x80)
+			w++;
+	return w;
+}
+
+/* Byte length of the first max code points of s[0..n). */
+static size_t
+ucut(const char *s, size_t n, size_t max)
+{
+	size_t i;
+
+	for (i = 0; i < n; i++)
+		if (((unsigned char)s[i] & 0xC0) != 0x80 && max-- == 0)
+			break;
+	return i;
 }
 
 static void
-render(const char *date, const char *status)
+pad(size_t n)
 {
-	size_t i, k = 0;
+	while (n-- > 0)
+		putchar(' ');
+}
+
+static void
+hline(const char *l, const char *m, const char *r, size_t nw)
+{
+	size_t i;
+
+	fputs(LINE, stdout);
+	fputs(l, stdout);
+	fputs("───", stdout);
+	fputs(m, stdout);
+	for (i = 0; i < nw + 2; i++)
+		fputs("─", stdout);
+	fputs(m, stdout);
+	fputs("─────────", stdout);
+	fputs(r, stdout);
+	fputs("\r\n", stdout);
+}
+
+static void
+row(char key, const char *l, size_t nw)
+{
+	const char *name = l + 2;
+	size_t n = strcspn(name, "\r\n"), w = ulen(name, n);
+	const char *state;
+
+	switch (l[0]) {
+	case '+': state = ACID "■ DONE "; break;
+	case '*': state = WARN "■ LAPSE"; break;
+	case '-': state = LINE "· TODO "; break;
+	default:  state = LINE "· ---- "; break;
+	}
+
+	printf(LINE "│" FG BOLD " %c " NOBOLD LINE "│ " FG, key);
+	if (w > nw) {
+		fwrite(name, 1, ucut(name, n, nw - 1), stdout);
+		fputs("…", stdout);
+	} else {
+		fwrite(name, 1, n, stdout);
+		pad(nw - w);
+	}
+	printf(" " LINE "│ %s " LINE "│\r\n", state);
+}
+
+static void
+render(const char *date, int saving)
+{
+	struct winsize ws;
+	size_t i, k = 0, w = 80, nw;
+	int d = dirty();
+	const char *bc, *bt;
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != -1 && ws.ws_col > 0)
+		w = ws.ws_col;
+	if (w > MAXW)
+		w = MAXW;
+	nw = w > FIXW + 4 ? w - FIXW : 4;
 
 	/* OPOST is off: newlines need an explicit \r. */
-	fputs("\x1b[2J\x1b[H", stdout);
-	printf("%s\r\n\r\n", date);
-	for (i = 0; i < nlines; i++) {
-		const char *l = lines[i];
+	fputs(BASE "\x1b[2J\x1b[H\r\n", stdout);
 
-		if (!ishabit(l))
+	if (saving) {
+		bc = B_DIM;
+		bt = " SAVING ";
+	} else if (d) {
+		bc = B_WARN;
+		bt = " UNSAVED ";
+	} else {
+		bc = B_ACID;
+		bt = " SAVED ";
+	}
+	/* "HABITS // YYYY-MM-DD" is 20 columns; badge flush with the table. */
+	printf(FG BOLD "HABITS" NOBOLD LINE " // " DIM "%s", date);
+	pad(nw + FIXW > 20 + strlen(bt) ? nw + FIXW - 20 - strlen(bt) : 1);
+	printf("%s%s" BASE "\r\n\r\n", bc, bt);
+
+	hline("┌", "┬", "┐", nw);
+	printf(LINE "│ " DIM "K" LINE " │ " DIM "HABIT");
+	pad(nw - 5);
+	fputs(LINE " │ " DIM "STATE   " LINE "│\r\n", stdout);
+	hline("├", "┼", "┤", nw);
+	for (i = 0; i < nlines; i++) {
+		if (!ishabit(lines[i]))
 			continue;
-		printf("%c %.*s\r\n", k < NKEYS ? keys[k] : ' ',
-		    (int)strcspn(l, "\r\n"), l);
+		row(k < NKEYS ? keys[k] : ' ', lines[i], nw);
 		k++;
 	}
-	printf("\r\n%s\r\n", status);
+	hline("└", "┴", "┘", nw);
+
+	fputs("\r\n", stdout);
+	if (k > 0)
+		printf(FG BOLD "a-%c" NOBOLD DIM " toggle" LINE "  ·  ",
+		    keys[(k < NKEYS ? k : NKEYS) - 1]);
+	fputs(d ? WARN BOLD "q" NOBOLD " save & quit" : FG BOLD "q" NOBOLD DIM " save & quit",
+	    stdout);
+	fputs(BASE "\r\n", stdout);
 	fflush(stdout);
 }
 
@@ -241,7 +361,7 @@ main(void)
 		snapshot();
 
 	raw_on();
-	render(date, footer());
+	render(date, 0);
 	for (;;) {
 		if ((n = read(STDIN_FILENO, &c, 1)) == -1)
 			die("read: %s", strerror(errno));
@@ -250,15 +370,14 @@ main(void)
 		if (n == 0 || c == 'q') {	/* EOF, q */
 			if (dirty()) {
 				/* The write may block for a while on iCloud. */
-				render(date, "\x1b[33msaving...\x1b[0m");
+				render(date, 1);
 				save(day);
-				render(date, "saved");
 			}
 			break;
 		}
 		if (c != '\0' && (p = strchr(keys, c)) != NULL &&
 		    toggle((size_t)(p - keys)))
-			render(date, footer());
+			render(date, 0);
 	}
 	return EXIT_SUCCESS;
 }

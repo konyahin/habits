@@ -11,18 +11,27 @@ If there is none, it creates one from `$HABITS_CONFIG/template`,
 prepending a `# YYYY-MM-DD` header.
 
 Each habit gets a letter. Pressing it toggles the mark; `q` saves and
-quits. The `q` line turns red while there are unsaved changes.
+quits. While there are unsaved changes the header badge reads `UNSAVED`
+and the `q` command turns red.
 
 ```
-2026-10-28
+HABITS // 2026-10-28                UNSAVED
 
-a + exercise
-b - reading
-c ! smoking
-d * alcohol
+┌───┬────────────────────────────┬─────────┐
+│ K │ HABIT                      │ STATE   │
+├───┼────────────────────────────┼─────────┤
+│ a │ exercise                   │ ■ DONE  │
+│ b │ reading                    │ · TODO  │
+│ c │ smoking                    │ · ----  │
+│ d │ alcohol                    │ ■ LAPSE │
+└───┴────────────────────────────┴─────────┘
 
-q  save and quit
+a-d toggle  ·  q save & quit
 ```
+
+The UI runs on the alternate screen and uses 24-bit color: a dark
+background, one accent for done habits and one for lapses and unsaved
+state. The table follows the terminal width up to 64 columns.
 
 ## File format
 
